@@ -373,24 +373,40 @@ public:
 		uint64_t diff =  nr_page_descriptors % pages_per_block(MAX_ORDER-1);
 		uint64_t load_to_MAX = nr_page_descriptors - diff;
 
+
+		syslog.messagef(LogLevel::DEBUG, "diff=0x%lx, load_to_max=0x%lx", diff, load_to_MAX);
+
+		
 		uint64_t block_size = pages_per_block(MAX_ORDER-1);
 		uint64_t block_number = load_to_MAX / block_size;
-		_free_areas[MAX_ORDER-1] = page_descriptors;
-		PageDescriptor* to_load = _free_areas[MAX_ORDER-1];
-		for(uint64_t i = 0; i < block_number; i++)
-		{
-			to_load->next_free = to_load + block_size;
-			to_load = to_load->next_free;
+		uint64_t allocated = 0;
+
+		if (block_number != 0) {
+			_free_areas[MAX_ORDER-1] = page_descriptors; // issue is here! when load_to_max is zero!
+			PageDescriptor* to_load = _free_areas[MAX_ORDER-1];
+			allocated += block_size;
+			for(uint64_t i = 0; i < block_number-1; i++)
+			{	
+				syslog.messagef(LogLevel::DEBUG, "load to _free_area[16]");
+				to_load->next_free = to_load + block_size;
+				to_load = to_load->next_free;
+				allocated += block_size;
+			}
+
+			to_load->next_free = NULL;
+			
 		}
 
-		to_load->next_free = NULL;
+		
+		
 
-		syslog.messagef(LogLevel::DEBUG, "diff = %x", diff);
+		
+
 
 		if (diff == 0) {
 			return true;
 		}else{
-			for(int i = MAX_ORDER-1; i >= 0; i--)
+			for(int i = MAX_ORDER-2; i >= 0; i--)
 			{
 				if (diff == 0) {
 					break;
@@ -398,19 +414,25 @@ public:
 				
 
 				if (diff == pages_per_block(i)) {
-					_free_areas[i] = page_descriptors + nr_page_descriptors - diff;
+					_free_areas[i] = page_descriptors + allocated;
 					break;
 				}else if(diff > pages_per_block(i)){
+					uint64_t blk_size = pages_per_block(i);
 					uint64_t buffer = diff;
-					diff = diff % pages_per_block(i);
-					uint64_t blocks_to_fill = pages_per_block(i) / (buffer - diff);
-					_free_areas[i] = page_descriptors + nr_page_descriptors - buffer;
+					diff = diff % blk_size;
+					uint64_t blocks_to_fill = (buffer - diff) / blk_size;
+					syslog.messagef(LogLevel::DEBUG, "blks to fill in f_a[%d] = %x", i, blocks_to_fill);
+					_free_areas[i] = page_descriptors + allocated;
 					PageDescriptor* start = _free_areas[i];
+					allocated += blk_size;
+
 					
-					for(uint64_t j = 0; j < blocks_to_fill; j++)
+					
+					for(uint64_t j = 0; j < blocks_to_fill-1; j++)
 					{
-						start->next_free = start + pages_per_block(i);
+						start->next_free = start + blk_size;
 						start = start->next_free;
+						allocated += blk_size;
 					}
 					start->next_free = NULL;
 					
