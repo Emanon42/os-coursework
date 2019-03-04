@@ -32,7 +32,7 @@ private:
 	 */
 	static inline constexpr uint64_t pages_per_block(int order)
 	{
-		/* The number of pages per block in a given order is simply 1, shifted left by the order number.
+		/* The number of pages per block in a given order is simply 1, shifted origin by the order number.
 		 * For example, in order-2, there are (1 << 2) == 4 pages in each block.
 		 */
 		return (1 << order);
@@ -52,7 +52,7 @@ private:
 	}
 	
 	/** Given a page descriptor, and an order, returns the buddy PGD.  The buddy could either be
-	 * to the left or the right of PGD, in the given order.
+	 * to the origin or the buddy of PGD, in the given order.
 	 * @param pgd The page descriptor to find the buddy for.
 	 * @param order The order in which the page descriptor lives.
 	 * @return Returns the buddy of the given page descriptor, in the given order.
@@ -92,6 +92,7 @@ private:
 		// Starting from the _free_area array, find the slot in which the page descriptor
 		// should be inserted.
 		PageDescriptor **slot = &_free_areas[order];
+		//syslog.messagef(LogLevel::DEBUG, "init slot");
 		
 		// Iterate whilst there is a slot, and whilst the page descriptor pointer is numerically
 		// greater than what the slot is pointing to.
@@ -99,10 +100,12 @@ private:
 			slot = &(*slot)->next_free;
 		}
 		
+		//syslog.messagef(LogLevel::DEBUG, "find slot");
 		// Insert the page descriptor into the linked list.
 		pgd->next_free = *slot;
 		*slot = pgd;
 		
+		//syslog.messagef(LogLevel::DEBUG, "insert");
 		// Return the insert point (i.e. slot)
 		return slot;
 	}
@@ -121,6 +124,8 @@ private:
 			slot = &(*slot)->next_free;
 		}
 
+		
+
 		// Make sure the block actually exists.  Panic the system if it does not.
 		assert(*slot == pgd);
 		
@@ -135,7 +140,7 @@ private:
 	 * @param block_pointer A pointer to a pointer containing the beginning of a block of free memory.
 	 * @param source_order The order in which the block of free memory exists.  Naturally,
 	 * the split will insert the two new blocks into the order below.
-	 * @return Returns the left-hand-side of the new block.
+	 * @return Returns the origin-hand-side of the new block.
 	 */
 	PageDescriptor *split_block(PageDescriptor **block_pointer, int source_order)
 	{
@@ -144,23 +149,23 @@ private:
 		
 		// Make sure the block_pointer is correctly aligned.
 		assert(is_correct_alignment_for_order(*block_pointer, source_order));
+
+		if (source_order == 0)  
+			return *block_pointer; 
 		
 		// TODO: Implement this function
-		PageDescriptor** to_split = &_free_areas[source_order];
-		uint64_t target_block_size = pages_per_block(source_order-1);
-		PageDescriptor** to_split2 = &_free_areas[source_order];
-		for(int i = 0; i < target_block_size; ++i)
-		{
-			to_split2 = &(*to_split2)->next_free;
-		}
-		remove_block(*to_split, source_order);
-		insert_block(*to_split, source_order-1);
-		insert_block(*to_split2, source_order-1);
-		
-		
+		PageDescriptor* to_split = *block_pointer;
+		int target_block_size = pages_per_block(source_order-1);
+
+		PageDescriptor* to_split2 = to_split + target_block_size;
+		//syslog.messagef(LogLevel::DEBUG, "try to remove bro");
+		remove_block(to_split, source_order);
+		insert_block(to_split, source_order-1);
+		insert_block(to_split2, source_order-1);
+
+		return to_split;
 
 
-		return nullptr;		
 	}
 	
 	/**
@@ -179,7 +184,18 @@ private:
 		assert(is_correct_alignment_for_order(*block_pointer, source_order));
 
 		// TODO: Implement this function
-		return nullptr;		
+		PageDescriptor* to_merge = buddy_of(*block_pointer, source_order);
+		remove_block(*block_pointer, source_order);
+		remove_block(to_merge, source_order);
+		PageDescriptor** to_return = NULL;
+		if (*block_pointer > to_merge) {
+			to_return = insert_block(to_merge, source_order+1);
+		}else{
+			to_return = insert_block(*block_pointer, source_order+1);
+		}
+		
+		
+		return to_return;		
 	}
 	
 public:
@@ -201,7 +217,28 @@ public:
 	 */
 	PageDescriptor *alloc_pages(int order) override
 	{
-		not_implemented();
+		if (_free_areas[order]) {
+			PageDescriptor* to_return = _free_areas[order];
+			remove_block(to_return, order);
+			return to_return;
+		}else{
+			for(int i = order; i < ARRAY_SIZE(_free_areas); i++)
+			{
+				if (_free_areas[i]) {
+					PageDescriptor* to_split = _free_areas[i];
+					while(i > order){
+						to_split = split_block(&to_split, i);
+						i -= 1;
+					}
+					remove_block(to_split, order);
+					return to_split;
+				}
+				
+			}
+		}
+		return NULL;
+		
+
 	}
 	
 	/**
@@ -215,9 +252,36 @@ public:
 		// for the order on which it is being freed, for example, it is
 		// illegal to free page 1 in order-1.
 		assert(is_correct_alignment_for_order(pgd, order));
+
+
+		insert_block(pgd, order);
+		PageDescriptor* to_merge = pgd;
+		syslog.messagef(LogLevel::DEBUG, "freeing pages, _free_areas has size: %d", ARRAY_SIZE(_free_areas));
+		// from order to 16 because merge_block will try to access i+1 layer in free_area
 		
-		not_implemented();
+		for(int i = order; i < ARRAY_SIZE(_free_areas)-1; i++)
+		{
+			PageDescriptor* buddy = buddy_of(to_merge, i);
+			PageDescriptor* slot = _free_areas[i];
+			bool merge_flag = false;
+			while(slot){
+				if(slot == buddy){
+					to_merge = *merge_block(&to_merge, i);
+					merge_flag = true;
+					break;
+				}
+				slot = slot->next_free;
+			}
+			if (!merge_flag) {
+				break; 
+			}
+		}
+		
+
 	}
+
+
+
 	
 	/**
 	 * Reserves a specific page, so that it cannot be allocated.
@@ -226,7 +290,74 @@ public:
 	 */
 	bool reserve_page(PageDescriptor *pgd)
 	{
-		not_implemented();
+		//syslog.messagef(LogLevel::DEBUG, "try to reserve p=%p", pgd);
+		
+		PageDescriptor* locate_block = NULL;
+		int locate_order = -1;
+		
+		for(int i = 0; i < ARRAY_SIZE(_free_areas); ++i)
+		{	
+			if (locate_block != NULL) {
+				break;
+			}
+			PageDescriptor* iter_slot = _free_areas[i];
+			while(iter_slot){
+				if ((iter_slot <= pgd) && (pgd < (iter_slot + pages_per_block(i)))) {
+					//syslog.messagef(LogLevel::DEBUG, "got u");
+					locate_block = iter_slot;
+					locate_order = i;
+					break;
+				}else{
+					iter_slot = iter_slot->next_free;
+				}
+			}
+			
+		}
+
+		if (locate_block != NULL) {
+			//syslog.messagef(LogLevel::DEBUG, "try to split");
+			
+			while(locate_order > 0){
+				PageDescriptor* origin = split_block(&locate_block, locate_order);
+				PageDescriptor* buddy = buddy_of(origin, locate_order-1);
+				if (pgd >= buddy) {
+					locate_block = buddy;
+				}else{
+					locate_block = origin;
+				}
+				locate_order -= 1;
+				
+			}
+		}
+
+
+		
+
+		PageDescriptor* zero_order_slot = _free_areas[0];
+		while (zero_order_slot) {
+			if (pgd == zero_order_slot) {
+				remove_block(pgd, 0);
+				return true;
+			}else{
+				zero_order_slot = zero_order_slot->next_free;
+			}
+		}
+
+		// for(int i = 0; i < ARRAY_SIZE(_free_areas); i++)
+		// {
+		// 	PageDescriptor* lancelot = _free_areas[i];
+		// 	int counter = 0;
+		// 	while(lancelot){
+		// 		syslog.messagef(LogLevel::DEBUG, "free_areas[%d], %dth slot=%p", i, counter, lancelot);
+		// 		counter += 1;
+		// 		lancelot = lancelot->next_free;
+		// 	}
+			
+		// }
+		dump_state();
+
+		return false;
+		
 	}
 	
 	/**
@@ -237,10 +368,109 @@ public:
 	{
 		mm_log.messagef(LogLevel::DEBUG, "Buddy Allocator Initialising pd=%p, nr=0x%lx", page_descriptors, nr_page_descriptors);
 		
-		// TODO: Initialise the free area linked list for the maximum order
-		// to initialise the allocation algorithm.
+		//TODO: Initialise the free area linked list for the maximum order
+		//to initialise the allocation algorithm.
+		uint64_t diff =  nr_page_descriptors % pages_per_block(MAX_ORDER-1);
+		uint64_t load_to_MAX = nr_page_descriptors - diff;
+
+		uint64_t block_size = pages_per_block(MAX_ORDER-1);
+		uint64_t block_number = load_to_MAX / block_size;
+		_free_areas[MAX_ORDER-1] = page_descriptors;
+		PageDescriptor* to_load = _free_areas[MAX_ORDER-1];
+		for(uint64_t i = 0; i < block_number; i++)
+		{
+			to_load->next_free = to_load + block_size;
+			to_load = to_load->next_free;
+		}
+
+		to_load->next_free = NULL;
+
+		syslog.messagef(LogLevel::DEBUG, "diff = %x", diff);
+
+		if (diff == 0) {
+			return true;
+		}else{
+			for(int i = MAX_ORDER-1; i >= 0; i--)
+			{
+				if (diff == 0) {
+					break;
+				}
+				
+
+				if (diff == pages_per_block(i)) {
+					_free_areas[i] = page_descriptors + nr_page_descriptors - diff;
+					break;
+				}else if(diff > pages_per_block(i)){
+					uint64_t buffer = diff;
+					diff = diff % pages_per_block(i);
+					uint64_t blocks_to_fill = pages_per_block(i) / (buffer - diff);
+					_free_areas[i] = page_descriptors + nr_page_descriptors - buffer;
+					PageDescriptor* start = _free_areas[i];
+					
+					for(uint64_t j = 0; j < blocks_to_fill; j++)
+					{
+						start->next_free = start + pages_per_block(i);
+						start = start->next_free;
+					}
+					start->next_free = NULL;
+					
+				}
+				
+			}
+			
+		}
+			
+	
 		
-		not_implemented();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+		// _free_areas[MAX_ORDER-1] = page_descriptors;
+		// PageDescriptor* to_load = _free_areas[MAX_ORDER-1];
+		// int block_size = pages_per_block(MAX_ORDER-1);
+		// int block_number = nr_page_descriptors / block_size;
+		// for(int i = 0; i < block_number; i++)
+		// {
+		// 	to_load->next_free = to_load + block_size;
+		// 	to_load = to_load->next_free;
+		// }
+
+		// to_load->next_free = NULL;
+		
+		
+		
+		// for(uint64_t i = 1; i < nr_page_descriptors; i++)
+		// {
+		// 	if (i % block_size == 0) {
+		// 		//syslog.messagef(LogLevel::DEBUG, "to_load=%p", page_descriptors+i);
+		// 		insert_block(page_descriptors+i, MAX_ORDER-1);
+		// 	}
+			
+			
+		// }
+
+		// for(int i = 0; i <ARRAY_SIZE(_free_areas); i++)
+		// {
+		// 	syslog.messagef(LogLevel::DEBUG, "%p", _free_areas[i]);
+		// }
+		dump_state();
+		return true;
+		
+		
+		
 	}
 
 	/**
